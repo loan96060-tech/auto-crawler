@@ -22,7 +22,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 from playwright.async_api import async_playwright
-import oracledb
+
 import pymysql
 
 import base64
@@ -804,123 +804,7 @@ class CrawlWorker(QThread):
         self.finished_signal.emit()
 
 
-class ExportOracleToMySQLWorker(QThread):
-    log_signal = pyqtSignal(str)
-    finished_signal = pyqtSignal()
-    
-    def __init__(self, mysql_config, table_name):
-        super().__init__()
-        self.mysql_config = mysql_config
-        self.table_name = table_name
-        self.wallet_path = r"C:\Users\creyt\Documents\vanbanphapluat"
 
-    def run(self):
-        try:
-            self.log_signal.emit(f">>> Bắt đầu xuất bảng {self.table_name} từ Oracle sang MySQL...")
-            
-            # Kết nối Oracle
-            conn_ora = oracledb.connect(
-                user="ADMIN",
-                password="Hotromt2012!",
-                dsn="QTN1J7SADEFHQ855_high",
-                wallet_location=self.wallet_path,
-                wallet_password="Hotromt2012!",
-                config_dir=self.wallet_path
-            )
-            cursor_ora = conn_ora.cursor()
-            
-            # Đếm số lượng
-            cursor_ora.execute(f"SELECT COUNT(*) FROM {self.table_name}")
-            total_rows = cursor_ora.fetchone()[0]
-            self.log_signal.emit(f"Tìm thấy tổng cộng {total_rows} bản ghi trên Oracle.")
-            
-            # Kết nối MySQL
-            conn_mysql = pymysql.connect(
-                host=self.mysql_config['db_host'],
-                user=self.mysql_config['db_user'],
-                password=self.mysql_config['db_pass'],
-                database=self.mysql_config['db_name'],
-                charset='utf8mb4'
-            )
-            cursor_mysql = conn_mysql.cursor()
-            
-            create_table_sql = f"""
-                CREATE TABLE IF NOT EXISTS `{self.table_name}` (
-                    `id` INT AUTO_INCREMENT PRIMARY KEY,
-                    `SO_HIEU` VARCHAR(255),
-                    `TEN_VAN_BAN` VARCHAR(900),
-                    `NOI_DUNG` LONGTEXT,
-                    `TRANG_THAI` VARCHAR(255),
-                    `NGAY_BAN_HANH` DATETIME,
-                    `NGAY_HIEU_LUC` DATETIME,
-                    `PHAM_VI` VARCHAR(255),
-                    `NGUOI_KY` VARCHAR(255),
-                    `NGANH` VARCHAR(255),
-                    `CHUC_DANH` VARCHAR(255),
-                    `CO_QUAN_BAN_HANH` VARCHAR(255),
-                    `NGAY_HET_HIEU_LUC` DATETIME,
-                    `LOAI_VAN_BAN` VARCHAR(255),
-                    `LUOC_DO` LONGTEXT,
-                    `FILE_TAI_VE` LONGTEXT,
-                    INDEX (`TEN_VAN_BAN`(255))
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-            """
-            cursor_mysql.execute(create_table_sql)
-            conn_mysql.commit()
-            
-            # Lấy dữ liệu Oracle
-            try:
-                cursor_ora.execute(f"SELECT SO_HIEU, TEN_VAN_BAN, NOI_DUNG, TRANG_THAI, NGAY_BAN_HANH, NGAY_HIEU_LUC, PHAM_VI, NGUOI_KY, NGANH, CHUC_DANH, CO_QUAN_BAN_HANH, NGAY_HET_HIEU_LUC, LOAI_VAN_BAN, LUOC_DO, FILE_TAI_VE FROM {self.table_name}")
-            except oracledb.DatabaseError as e:
-                self.log_signal.emit(f"Cảnh báo: Bảng Oracle chưa có các cột mới, sẽ dùng dữ liệu NULL cho các cột này. Lỗi: {e}")
-                cursor_ora.execute(f"SELECT SO_HIEU, TEN_VAN_BAN, NOI_DUNG, TRANG_THAI, NGAY_BAN_HANH, NGAY_HIEU_LUC, PHAM_VI, NGUOI_KY, NULL, NULL, NULL, NULL, NULL, NULL, NULL FROM {self.table_name}")
-            
-            batch_size = 30
-            count = 0
-            
-            sql_insert = f"""
-                INSERT INTO `{self.table_name}` (
-                    SO_HIEU, TEN_VAN_BAN, NOI_DUNG, TRANG_THAI, 
-                    NGAY_BAN_HANH, NGAY_HIEU_LUC, PHAM_VI, NGUOI_KY,
-                    NGANH, CHUC_DANH, CO_QUAN_BAN_HANH, NGAY_HET_HIEU_LUC, LOAI_VAN_BAN, LUOC_DO, FILE_TAI_VE
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """
-            
-            while True:
-                rows = cursor_ora.fetchmany(batch_size)
-                if not rows:
-                    break
-                    
-                mysql_data = []
-                for row in rows:
-                    so_hieu, ten_vb, noi_dung, trang_thai, ngay_ban_hanh, ngay_hieu_luc, pham_vi, nguoi_ky, nganh, chuc_danh, co_quan_ban_hanh, ngay_het_hieu_luc, loai_van_ban, luoc_do_html, tai_ve_json = row
-                    if noi_dung and hasattr(noi_dung, 'read'):
-                        noi_dung = noi_dung.read()
-                    if ten_vb and hasattr(ten_vb, 'read'):
-                        ten_vb = ten_vb.read()
-                    if luoc_do_html and hasattr(luoc_do_html, 'read'):
-                        luoc_do_html = luoc_do_html.read()
-                    if tai_ve_json and hasattr(tai_ve_json, 'read'):
-                        tai_ve_json = tai_ve_json.read()
-                        
-                    mysql_data.append((so_hieu, ten_vb, noi_dung, trang_thai, ngay_ban_hanh, ngay_hieu_luc, pham_vi, nguoi_ky, nganh, chuc_danh, co_quan_ban_hanh, ngay_het_hieu_luc, loai_van_ban, luoc_do_html, tai_ve_json))
-                
-                cursor_mysql.executemany(sql_insert, mysql_data)
-                conn_mysql.commit()
-                
-                count += len(rows)
-                self.log_signal.emit(f"  -> Đã đẩy thành công {count}/{total_rows} bản ghi...")
-                
-            cursor_mysql.close()
-            conn_mysql.close()
-            cursor_ora.close()
-            conn_ora.close()
-            
-            self.log_signal.emit("✅ HOÀN TẤT CHUYỂN DỮ LIỆU TỪ ORACLE SANG MYSQL!")
-        except Exception as e:
-            self.log_signal.emit(f"Lỗi Export: {str(e)}")
-        finally:
-            self.finished_signal.emit()
 
 
 class MainWindow(QMainWindow):
@@ -990,14 +874,9 @@ class MainWindow(QMainWindow):
         )
         self.load_db_btn.clicked.connect(self.load_mysql_table)
 
-        self.export_btn = QPushButton("📤 Đẩy Oracle sang Remote MySQL")
-        self.export_btn.setStyleSheet("background-color: #d35400; color: white; font-weight: bold; padding: 6px;")
-        self.export_btn.clicked.connect(self.start_export)
-
         db_form_layout.addWidget(QLabel("Tên bảng (VBPL_TRUNG_UONG / VBPL_DIA_PHUONG):"))
         db_form_layout.addWidget(self.table_input)
         db_form_layout.addWidget(self.load_db_btn)
-        db_form_layout.addWidget(self.export_btn)
         tab2_layout.addLayout(db_form_layout)
 
         self.db_table_view = QTableWidget()
@@ -1063,21 +942,6 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.append_log(f"Lỗi tải dữ liệu bảng: {e}")
 
-    def start_export(self):
-        config = {
-            "db_host": self.dsn_input.text().strip(),
-            "db_user": self.user_input.text().strip(),
-            "db_pass": self.pass_input.text().strip(),
-            "db_name": self.db_input.text().strip(),
-        }
-        table_name = self.table_input.text().strip().upper()
-        self.export_btn.setEnabled(False)
-        self.append_log(f"Bắt đầu quy trình đẩy dữ liệu bảng {table_name} từ Oracle sang MySQL...")
-        
-        self.export_worker = ExportOracleToMySQLWorker(config, table_name)
-        self.export_worker.log_signal.connect(self.append_log)
-        self.export_worker.finished_signal.connect(lambda: self.export_btn.setEnabled(True))
-        self.export_worker.start()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
