@@ -2,7 +2,7 @@ import sys
 import asyncio
 import os
 import json
-from PyQt5.QtCore import QThread, pyqtSignal
+from PyQt5.QtCore import QThread, pyqtSignal, QCoreApplication
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
