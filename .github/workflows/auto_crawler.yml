@@ -44,7 +44,24 @@ jobs:
           QT_QPA_PLATFORM: offscreen
           PYTHONUNBUFFERED: 1
         run: |
-          xvfb-run --auto-servernum python tool.py --auto
+          # Tính thời gian kết thúc vòng lặp (280 phút = 16800 giây)
+          end_time=$((SECONDS + 16800))
+          
+          while [ $SECONDS -lt $end_time ]; do
+            echo "--- BẮT ĐẦU CÀO DỮ LIỆU ---"
+            xvfb-run --auto-servernum python tool.py --auto
+            exit_code=$?
+            
+            if [ $exit_code -eq 0 ]; then
+              echo "Tool hoàn thành 100% công việc một cách mượt mà! Thoát vòng lặp."
+              break
+            else
+              echo "Tool báo lỗi hoặc bị Firewall chặn (Exit code: $exit_code)."
+              echo "Tạm nghỉ 15 phút (900 giây) để Firewall VBPL nguội lại..."
+              sleep 900
+              echo "Tiếp tục chạy lại..."
+            fi
+          done
         continue-on-error: true # Đảm bảo có lỗi sập thì vẫn chạy bước lưu file bên dưới
 
       - name: Commit and Push State

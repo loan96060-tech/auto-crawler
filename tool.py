@@ -142,6 +142,7 @@ class CrawlWorker(QThread):
         target_table = "VBPL_TRUNG_UONG" if is_central else "VBPL_DIA_PHUONG"
         wallet_path = r"C:\Users\creyt\Documents\vanbanphapluat"
         is_headless = self.config["headless"]
+        self.has_fatal_error = False
 
         # --- QUẢN LÝ FILE LOG TRẠNG THÁI CRAWL ---
         self.source_key = "trung_uong" if is_central else "dia_phuong"
@@ -267,6 +268,7 @@ class CrawlWorker(QThread):
                     self.log_signal.emit(f"--- NỘI DUNG HTML TRẢ VỀ ---\n{html_err[:2000]}\n----------------------------")
                 except:
                     pass
+                self.has_fatal_error = True
                 await browser.close()
                 self.finished_signal.emit()
                 return
@@ -290,6 +292,7 @@ class CrawlWorker(QThread):
                     page_title = await page.title()
                     page_content = await page.content()
                     self.log_signal.emit(f"Không tìm thấy dữ liệu văn bản nào. Đã quét hết toàn bộ trang! Title: {page_title}. Nội dung HTML: {page_content[:200]}")
+                    self.has_fatal_error = True
                     break
 
                 highest_page = max(progress_data[source_key]["success"]) if progress_data[source_key]["success"] else 0
@@ -997,9 +1000,14 @@ if __name__ == "__main__":
         window.completed_workers = 0
         def on_worker_finished():
             window.completed_workers += 1
-            if window.completed_workers >= 2:
-                window.append_log("Hoàn thành toàn bộ quá trình cào. Đang thoát...")
-                QCoreApplication.quit()
+            if window.completed_workers == 2:
+                if worker_tu.has_fatal_error or worker_dp.has_fatal_error:
+                    print("Quá trình cào bị lỗi hoặc chặn. Thoát với mã lỗi 1.")
+                    import sys
+                    sys.exit(1)
+                else:
+                    print("Hoàn thành toàn bộ quá trình cào. Đang thoát...")
+                    QApplication.quit()
         
         worker_tu.log_signal.connect(window.append_log)
         worker_tu.finished_signal.connect(on_worker_finished)
