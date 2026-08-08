@@ -147,20 +147,7 @@ class CrawlWorker(QThread):
         self.source_key = "trung_uong" if is_central else "dia_phuong"
         self.github_state_lock = asyncio.Lock()
         
-        progress_file = f"crawl_progress_{self.source_key}.json"
-        progress_data = {}
-        if os.path.exists(progress_file):
-            try:
-                with open(progress_file, "r", encoding="utf-8") as f:
-                    progress_data = json.load(f)
-            except:
-                progress_data = {}
-        
-        if self.source_key not in progress_data:
-            progress_data[self.source_key] = {"success": [], "errors": {}}
-        elif isinstance(progress_data[self.source_key], list):
-            progress_data[self.source_key] = {"success": progress_data[self.source_key], "errors": {}}
-        
+        progress_data = {self.source_key: {"success": [], "errors": {}}}
         source_key = self.source_key
 
         self.log_signal.emit(f"Đang kết nối tới Remote MySQL ({self.config['db_host']})...")
@@ -217,6 +204,25 @@ class CrawlWorker(QThread):
                     # Nếu cột đã tồn tại, MySQL sẽ quăng lỗi, ta chỉ việc bỏ qua (pass)
                     pass
                     
+            # Tạo bảng CRAWL_LOG
+            create_log_table_sql = """
+                CREATE TABLE IF NOT EXISTS `CRAWL_LOG` (
+                    `id` INT AUTO_INCREMENT PRIMARY KEY,
+                    `source` VARCHAR(50),
+                    `page_number` INT,
+                    `status` VARCHAR(20),
+                    `error_details` LONGTEXT,
+                    `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    UNIQUE KEY `unique_source_page` (`source`, `page_number`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """
+            cursor.execute(create_log_table_sql)
+            
+            # Tải danh sách các trang đã thành công từ DB
+            cursor.execute("SELECT page_number FROM `CRAWL_LOG` WHERE `source` = %s AND `status` = 'SUCCESS'", (self.source_key,))
+            success_pages = [row[0] for row in cursor.fetchall()]
+            progress_data[self.source_key]["success"] = sorted(success_pages)
+            
             connection.commit()
             
             db_lock = asyncio.Lock()
@@ -739,27 +745,33 @@ class CrawlWorker(QThread):
                 if tasks:
                     await asyncio.gather(*tasks)
 
-                # --- LƯU TRẠNG THÁI VÀO JSON ---
+                # --- LƯU TRẠNG THÁI VÀO CRAWL_LOG (MySQL) ---
                 if not page_has_error:
                     if current_page not in progress_data[source_key]["success"]:
                         progress_data[source_key]["success"].append(current_page)
                         progress_data[source_key]["success"].sort()
-                        progress_data[source_key]["errors"].pop(str(current_page), None)
-                        try:
-                            with open(progress_file, "w", encoding="utf-8") as f:
-                                json.dump(progress_data, f, ensure_ascii=False, indent=4)
-                            self.log_signal.emit(f"[LƯU LOG] Hoàn thành và lưu trạng thái Trang {current_page} vào file json.")
-                        except Exception as e:
-                            self.log_signal.emit(f"[CẢNH BÁO] Không thể lưu file log: {e}")
-                else:
-                    self.log_signal.emit(f"[CẢNH BÁO] Trang {current_page} có lỗi, lưu danh sách lỗi vào file json để cào lại sau.")
-                    progress_data[source_key]["errors"][str(current_page)] = page_error_details
                     try:
-                        with open(progress_file, "w", encoding="utf-8") as f:
-                            json.dump(progress_data, f, ensure_ascii=False, indent=4)
-                    except:
-                        pass
-
+                        cursor.execute("""
+                            INSERT INTO `CRAWL_LOG` (source, page_number, status, error_details) 
+                            VALUES (%s, %s, %s, %s) 
+                            ON DUPLICATE KEY UPDATE status = VALUES(status), error_details = VALUES(error_details)
+                        """, (source_key, current_page, 'SUCCESS', ''))
+                        connection.commit()
+                        self.log_signal.emit(f"[LƯU LOG] Đã lưu tiến độ Trang {current_page} (SUCCESS) vào MySQL.")
+                    except Exception as e:
+                        self.log_signal.emit(f"[CẢNH BÁO] Không thể lưu log vào MySQL: {e}")
+                else:
+                    self.log_signal.emit(f"[CẢNH BÁO] Trang {current_page} có lỗi, lưu chi tiết vào MySQL để cào lại sau.")
+                    try:
+                        cursor.execute("""
+                            INSERT INTO `CRAWL_LOG` (source, page_number, status, error_details) 
+                            VALUES (%s, %s, %s, %s) 
+                            ON DUPLICATE KEY UPDATE status = VALUES(status), error_details = VALUES(error_details)
+                        """, (source_key, current_page, 'ERROR', str(page_error_details)))
+                        connection.commit()
+                    except Exception as e:
+                        self.log_signal.emit(f"[CẢNH BÁO] Không thể lưu log lỗi vào MySQL: {e}")
+                    
                 # --- CHUYỂN SANG TRANG TIẾP THEO ---
                 next_page_num = current_page + 1
                 self.log_signal.emit(f"\n-> Đang tìm cách chuyển sang trang {next_page_num}...")

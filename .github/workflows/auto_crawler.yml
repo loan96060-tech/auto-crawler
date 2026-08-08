@@ -51,7 +51,6 @@ jobs:
         run: |
           git config --global user.name "GitHub Action Crawler"
           git config --global user.email "action@github.com"
-          git add crawl_progress_*.json || true
           git add github_state_*.json || true
           # Kiểm tra nếu có thay đổi thì mới commit
           if git diff --staged --quiet; then
