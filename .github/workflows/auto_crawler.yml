@@ -42,6 +42,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           GH_USERNAME: ${{ secrets.GH_USERNAME }}
           QT_QPA_PLATFORM: offscreen
+          PYTHONUNBUFFERED: 1
         run: |
           xvfb-run --auto-servernum python tool.py --auto
         continue-on-error: true # Đảm bảo có lỗi sập thì vẫn chạy bước lưu file bên dưới

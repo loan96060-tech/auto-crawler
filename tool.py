@@ -908,6 +908,7 @@ class MainWindow(QMainWindow):
 
     def append_log(self, text):
         self.log_output.append(text)
+        print(text, flush=True)
         scrollbar = self.log_output.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
