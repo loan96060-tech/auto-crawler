@@ -1,0 +1,52 @@
+name: "Auto Crawler 24/7"
+
+on:
+  schedule:
+    - cron: '0 */5 * * *' # Chạy tự động mỗi 5 tiếng
+  workflow_dispatch: # Cho phép bấm chạy bằng tay
+
+jobs:
+  crawl:
+    name: Headless Crawl
+    runs-on: ubuntu-latest
+    timeout-minutes: 300 # Tự tắt sau 5 tiếng để kịp commit data
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }} # Dùng token mặc định của action để đẩy code
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libegl1
+          
+      - name: Install Python Packages
+        run: |
+          pip install PyQt5 pymysql playwright
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Run Crawler
+        run: |
+          xvfb-run --auto-servernum python tool.py --auto
+        continue-on-error: true # Đảm bảo có lỗi sập thì vẫn chạy bước lưu file bên dưới
+
+      - name: Commit and Push State
+        run: |
+          git config --global user.name "GitHub Action Crawler"
+          git config --global user.email "action@github.com"
+          git add crawl_progress.json github_state.json
+          # Kiểm tra nếu có thay đổi thì mới commit
+          if git diff --staged --quiet; then
+            echo "Khong co thay doi de commit."
+          else
+            git commit -m "Auto-update progress state"
+            git push
+          fi
