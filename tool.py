@@ -282,7 +282,9 @@ class CrawlWorker(QThread):
 
                 item_count = await page.locator(".ant-list-item").count()
                 if item_count == 0:
-                    self.log_signal.emit("Không tìm thấy dữ liệu văn bản nào. Đã quét hết toàn bộ trang!")
+                    page_title = await page.title()
+                    page_content = await page.content()
+                    self.log_signal.emit(f"Không tìm thấy dữ liệu văn bản nào. Đã quét hết toàn bộ trang! Title: {page_title}. Nội dung HTML: {page_content[:200]}")
                     break
 
                 highest_page = max(progress_data[source_key]["success"]) if progress_data[source_key]["success"] else 0
@@ -741,6 +743,7 @@ class CrawlWorker(QThread):
                 tasks = []
                 for idx, doc_info in enumerate(docs):
                     tasks.append(asyncio.create_task(process_document(doc_info, idx + 1)))
+                    await asyncio.sleep(2)  # Mở luồng cách nhau 2 giây để tránh bị chặn IP
                 
                 if tasks:
                     await asyncio.gather(*tasks)
