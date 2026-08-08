@@ -29,7 +29,7 @@ jobs:
           
       - name: Install Python Packages
         run: |
-          pip install PyQt5 pymysql playwright
+          pip install PyQt5 pymysql playwright oracledb
           playwright install chromium
           playwright install-deps chromium
 
