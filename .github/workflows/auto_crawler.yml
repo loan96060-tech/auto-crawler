@@ -34,6 +34,13 @@ jobs:
           playwright install-deps chromium
 
       - name: Run Crawler
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASS: ${{ secrets.DB_PASS }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_USERNAME: ${{ secrets.GH_USERNAME }}
         run: |
           xvfb-run --auto-servernum python tool.py --auto
         continue-on-error: true # Đảm bảo có lỗi sập thì vẫn chạy bước lưu file bên dưới

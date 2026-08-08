@@ -29,8 +29,8 @@ import base64
 import time
 
 # --- CẤU HÌNH GITHUB STORAGE ---
-GITHUB_TOKEN = "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"
-GITHUB_USERNAME = "creyt2012"
+GITHUB_TOKEN = os.getenv("GH_TOKEN", "")
+GITHUB_USERNAME = os.getenv("GH_USERNAME", "creyt2012")
 GITHUB_REPO_PREFIX = "vbpl-storage"
 CUSTOM_DOMAIN = "file.timhieuluat.com"
 MAX_FILES_PER_REPO = 1000
@@ -942,11 +942,11 @@ class MainWindow(QMainWindow):
         tab1_layout = QVBoxLayout(tab1)
         form_layout = QFormLayout()
 
-        self.dsn_input = QLineEdit("161.153.108.144")
-        self.user_input = QLineEdit("timhieuluat")
-        self.pass_input = QLineEdit("timhieuluat")
+        self.dsn_input = QLineEdit(os.getenv("DB_HOST", "161.153.108.144"))
+        self.user_input = QLineEdit(os.getenv("DB_USER", "timhieuluat"))
+        self.pass_input = QLineEdit(os.getenv("DB_PASS", ""))
         self.pass_input.setEchoMode(QLineEdit.Password)
-        self.db_input = QLineEdit("timhieuluat")
+        self.db_input = QLineEdit(os.getenv("DB_NAME", "timhieuluat"))
 
         self.url_combo = QComboBox()
         self.url_combo.addItem("Trung Ương", "https://vbpl.vn/van-ban/trung-uong")
