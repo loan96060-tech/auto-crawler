@@ -35,39 +35,39 @@ GITHUB_REPO_PREFIX = "vbpl-storage"
 CUSTOM_DOMAIN = "file.timhieuluat.com"
 MAX_FILES_PER_REPO = 1000
 
-GITHUB_STATE_FILE = "github_state.json"
-github_state_lock = asyncio.Lock()
-
-async def get_github_state():
-    if os.path.exists(GITHUB_STATE_FILE):
+async def get_github_state(source_key):
+    state_file = f"github_state_{source_key}.json"
+    if os.path.exists(state_file):
         try:
-            with open(GITHUB_STATE_FILE, "r", encoding="utf-8") as f:
+            with open(state_file, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
             pass
     return {"repo_index": 1, "file_count": 0}
 
-async def save_github_state(state):
+async def save_github_state(state, source_key):
+    state_file = f"github_state_{source_key}.json"
     try:
-        with open(GITHUB_STATE_FILE, "w", encoding="utf-8") as f:
+        with open(state_file, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=4)
     except Exception:
         pass
 
-async def upload_to_github(api_context, filename, file_content, log_signal):
-    global github_state_lock
-    async with github_state_lock:
-        state = await get_github_state()
+async def upload_to_github(api_context, filename, file_content, log_signal, source_key, lock):
+    async with lock:
+        state = await get_github_state(source_key)
         repo_index = state["repo_index"]
         file_count = state["file_count"]
         
-        repo_name = f"{GITHUB_REPO_PREFIX}-{repo_index}"
+        # Tạo tiền tố kho theo source_key (vd: vbpl-storage-tu hoặc vbpl-storage-dp)
+        prefix = f"{GITHUB_REPO_PREFIX}-{'tu' if source_key == 'trung_uong' else 'dp'}"
+        repo_name = f"{prefix}-{repo_index}"
         
         # Nếu đầy HOẶC là file đầu tiên (chưa có kho), tạo repo mới
         if file_count >= MAX_FILES_PER_REPO or file_count == 0:
             if file_count >= MAX_FILES_PER_REPO:
                 repo_index += 1
-                repo_name = f"{GITHUB_REPO_PREFIX}-{repo_index}"
+                repo_name = f"{prefix}-{repo_index}"
                 file_count = 0
             
             # Tạo repo mới qua API
@@ -87,7 +87,7 @@ async def upload_to_github(api_context, filename, file_content, log_signal):
                 log_signal.emit(f"      -> [GitHub] Kho {repo_name} đã sẵn sàng.")
                 state["repo_index"] = repo_index
                 state["file_count"] = 0
-                await save_github_state(state)
+                await save_github_state(state, source_key)
             else:
                 resp_text = await resp.text()
                 log_signal.emit(f"      -> [LỖI GitHub] Không thể tạo kho {repo_name}: {resp_text[:100]}")
@@ -113,7 +113,7 @@ async def upload_to_github(api_context, filename, file_content, log_signal):
         upload_resp = await api_context.put(upload_url, headers=headers, data=put_data, timeout=60000)
         if upload_resp.ok:
             state["file_count"] += 1
-            await save_github_state(state)
+            await save_github_state(state, source_key)
                 
             final_url = f"https://{CUSTOM_DOMAIN}/{repo_name}/main/{file_path}"
             return True, final_url
@@ -144,7 +144,10 @@ class CrawlWorker(QThread):
         is_headless = self.config["headless"]
 
         # --- QUẢN LÝ FILE LOG TRẠNG THÁI CRAWL ---
-        progress_file = "crawl_progress.json"
+        self.source_key = "trung_uong" if is_central else "dia_phuong"
+        self.github_state_lock = asyncio.Lock()
+        
+        progress_file = f"crawl_progress_{self.source_key}.json"
         progress_data = {}
         if os.path.exists(progress_file):
             try:
@@ -153,11 +156,12 @@ class CrawlWorker(QThread):
             except:
                 progress_data = {}
         
-        source_key = "trung_uong" if is_central else "dia_phuong"
-        if source_key not in progress_data:
-            progress_data[source_key] = {"success": [], "errors": {}}
-        elif isinstance(progress_data[source_key], list):
-            progress_data[source_key] = {"success": progress_data[source_key], "errors": {}}
+        if self.source_key not in progress_data:
+            progress_data[self.source_key] = {"success": [], "errors": {}}
+        elif isinstance(progress_data[self.source_key], list):
+            progress_data[self.source_key] = {"success": progress_data[self.source_key], "errors": {}}
+        
+        source_key = self.source_key
 
         self.log_signal.emit(f"Đang kết nối tới Remote MySQL ({self.config['db_host']})...")
         try:
@@ -585,7 +589,7 @@ class CrawlWorker(QThread):
                                                             if filename.lower().endswith(('.html', '.htm')):
                                                                 continue
                                                                 
-                                                            success, git_url = await upload_to_github(api_context, filename, file_content, self.log_signal)
+                                                            success, git_url = await upload_to_github(api_context, filename, file_content, self.log_signal, self.source_key, self.github_state_lock)
                                                             if success:
                                                                 final_url = git_url
                                                                 self.log_signal.emit(f"      -> [Tải file thành công]: {final_url}")
@@ -637,7 +641,7 @@ class CrawlWorker(QThread):
                                                     final_url = ""
                                                     if True:  # Luôn kích hoạt upload GitHub
                                                         api_context = context.request
-                                                        success, git_url = await upload_to_github(api_context, filename, file_content, self.log_signal)
+                                                        success, git_url = await upload_to_github(api_context, filename, file_content, self.log_signal, self.source_key, self.github_state_lock)
                                                         if success:
                                                             final_url = git_url
                                                             self.log_signal.emit(f"      -> [Tải file thành công (Button)]: {final_url}")
@@ -947,18 +951,47 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = MainWindow()
     if "--auto" in sys.argv:
-        # Chế độ chạy ngầm (Dành cho GitHub Actions)
-        # Kết nối sự kiện hoàn thành để tự động thoát
-        def on_crawl_finished():
-            window.append_log("Hoàn thành quá trình cào nền. Đang thoát...")
-            QCoreApplication.quit()
-        
-        # Bắt buộc ẩn trình duyệt
+        # Chế độ chạy ngầm song song 2 mảng (Trung Ương + Địa Phương)
         window.headless_checkbox.setChecked(True)
-        # Bắt đầu cào
-        window.start_crawling()
-        if hasattr(window, 'worker'):
-            window.worker.finished.connect(on_crawl_finished)
+        window.start_btn.setEnabled(False)
+        window.log_output.clear()
+        
+        config = {
+            "db_host": window.dsn_input.text().strip(),
+            "db_user": window.user_input.text().strip(),
+            "db_pass": window.pass_input.text().strip(),
+            "db_name": window.db_input.text().strip(),
+            "headless": True
+        }
+        
+        config_tu = config.copy()
+        config_tu["url"] = "https://vbpl.vn/van-ban/trung-uong"
+        
+        config_dp = config.copy()
+        config_dp["url"] = "https://vbpl.vn/van-ban/dia-phuong"
+        
+        worker_tu = CrawlWorker(config_tu)
+        worker_dp = CrawlWorker(config_dp)
+        
+        window.completed_workers = 0
+        def on_worker_finished():
+            window.completed_workers += 1
+            if window.completed_workers >= 2:
+                window.append_log("Hoàn thành toàn bộ quá trình cào. Đang thoát...")
+                QCoreApplication.quit()
+        
+        worker_tu.log_signal.connect(window.append_log)
+        worker_tu.finished_signal.connect(on_worker_finished)
+        
+        worker_dp.log_signal.connect(window.append_log)
+        worker_dp.finished_signal.connect(on_worker_finished)
+        
+        # Lưu tham chiếu để tránh bị Garbage Collector xoá mất worker
+        window.worker_tu = worker_tu
+        window.worker_dp = worker_dp
+        
+        worker_tu.start()
+        worker_dp.start()
     else:
         window.show()
     sys.exit(app.exec_())
