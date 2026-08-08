@@ -257,11 +257,16 @@ class CrawlWorker(QThread):
             
             self.log_signal.emit(f"Đang truy cập cổng thông tin VBPL (Chế độ {'Ẩn' if is_headless else 'Hiện'} trình duyệt)...")
             try:
-                await page.goto("https://vbpl.vn", timeout=60000)
+                await page.goto("https://vbpl.vn", timeout=120000, wait_until="domcontentloaded")
                 await page.wait_for_timeout(3000)
-                await page.goto(target_url, timeout=60000)
+                await page.goto(target_url, timeout=120000, wait_until="domcontentloaded")
             except Exception as e:
-                self.log_signal.emit(f"Lỗi truy cập trang: {e}")
+                self.log_signal.emit(f"Lỗi truy cập trang (Timeout): {e}")
+                try:
+                    html_err = await page.content()
+                    self.log_signal.emit(f"--- NỘI DUNG HTML TRẢ VỀ ---\n{html_err[:2000]}\n----------------------------")
+                except:
+                    pass
                 await browser.close()
                 self.finished_signal.emit()
                 return
