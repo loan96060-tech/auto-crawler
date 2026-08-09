@@ -60,18 +60,15 @@ async def upload_to_github(api_context, filename, file_content, log_signal, sour
         repo_index = state["repo_index"]
         file_count = state["file_count"]
         
-        # Tạo tiền tố kho theo source_key (vd: vbpl-storage-tu hoặc vbpl-storage-dp)
         prefix = f"{GITHUB_REPO_PREFIX}-{'tu' if source_key == 'trung_uong' else 'dp'}"
         repo_name = f"{prefix}-{repo_index}"
         
-        # Nếu đầy HOẶC là file đầu tiên (chưa có kho), tạo repo mới
         if file_count >= MAX_FILES_PER_REPO or file_count == 0:
             if file_count >= MAX_FILES_PER_REPO:
                 repo_index += 1
                 repo_name = f"{prefix}-{repo_index}"
                 file_count = 0
             
-            # Tạo repo mới qua API
             create_url = "https://api.github.com/user/repos"
             headers = {
                 "Authorization": f"token {GITHUB_TOKEN}",
@@ -84,7 +81,7 @@ async def upload_to_github(api_context, filename, file_content, log_signal, sour
             }
             log_signal.emit(f"      -> [GitHub] Đang tạo kho mới: {repo_name}...")
             resp = await api_context.post(create_url, headers=headers, data=create_data, timeout=60000)
-            if resp.ok or resp.status == 422: # 422 = Kho đã tồn tại
+            if resp.ok or resp.status == 422:
                 log_signal.emit(f"      -> [GitHub] Kho {repo_name} đã sẵn sàng.")
                 state["repo_index"] = repo_index
                 state["file_count"] = 0
@@ -94,7 +91,6 @@ async def upload_to_github(api_context, filename, file_content, log_signal, sour
                 log_signal.emit(f"      -> [LỖI GitHub] Không thể tạo kho {repo_name}: {resp_text[:100]}")
                 return False, ""
                 
-        # Tiến hành Upload tuần tự (Để tránh lỗi Conflict Tree của GitHub khi push song song)
         safe_filename = urllib.parse.quote(filename.replace(' ', '_'))
         file_path = f"files/{int(time.time())}_{safe_filename}"
         upload_url = f"https://api.github.com/repos/{GITHUB_USERNAME}/{repo_name}/contents/{file_path}"
@@ -143,7 +139,6 @@ class CrawlWorker(QThread):
         is_headless = self.config["headless"]
         self.has_fatal_error = False
 
-        # --- QUẢN LÝ FILE LOG TRẠNG THÁI CRAWL ---
         self.source_key = "trung_uong" if is_central else "dia_phuong"
         self.github_state_lock = asyncio.Lock()
         
@@ -161,7 +156,6 @@ class CrawlWorker(QThread):
             )
             cursor = connection.cursor()
             
-            # Tạo bảng tự động (chỉ chạy nếu bảng chưa tồn tại)
             create_table_sql = f"""
                 CREATE TABLE IF NOT EXISTS `{target_table}` (
                     `id` INT AUTO_INCREMENT PRIMARY KEY,
@@ -186,7 +180,6 @@ class CrawlWorker(QThread):
             """
             cursor.execute(create_table_sql)
             
-            # Tự động thêm các cột bị thiếu vào DB (nếu DB cũ chưa có)
             columns_to_ensure = [
                 ("NGANH", "VARCHAR(255)"),
                 ("CHUC_DANH", "VARCHAR(255)"),
@@ -205,7 +198,6 @@ class CrawlWorker(QThread):
                 except Exception:
                     pass
                     
-            # Tạo bảng CRAWL_LOG
             create_log_table_sql = """
                 CREATE TABLE IF NOT EXISTS `CRAWL_LOG` (
                     `id` INT AUTO_INCREMENT PRIMARY KEY,
@@ -219,13 +211,11 @@ class CrawlWorker(QThread):
             """
             cursor.execute(create_log_table_sql)
             
-            # Tải danh sách các trang đã thành công từ DB
             cursor.execute("SELECT page_number FROM `CRAWL_LOG` WHERE `source` = %s AND `status` = 'SUCCESS'", (self.source_key,))
             success_pages = [row[0] for row in cursor.fetchall()]
             progress_data[self.source_key]["success"] = sorted(success_pages)
             
             connection.commit()
-            
             db_lock = asyncio.Lock()
             self.log_signal.emit(f"Kết nối MySQL thành công! Đích lưu: bảng {target_table}")
         except Exception as e:
@@ -273,7 +263,6 @@ class CrawlWorker(QThread):
                 self.log_signal.emit(f"\n--- Đang kiểm tra TRANG {current_page} ("
                                      f"{'Trung ương' if is_central else 'Địa phương'}) ---")
 
-                # Đợi danh sách hiển thị để đảm bảo trang đã load
                 try:
                     await page.wait_for_selector(".ant-skeleton", state="hidden", timeout=30000)
                     await page.wait_for_selector(".ant-list-item", state="visible", timeout=15000)
@@ -289,7 +278,6 @@ class CrawlWorker(QThread):
                     self.has_fatal_error = True
                     break
 
-                # --- FAST FORWARD NẾU TRANG HIỆN TẠI ĐĐÃ CRAWL ---
                 if current_page in progress_data[source_key]["success"]:
                     target_page = current_page + 1
                     while target_page in progress_data[source_key]["success"]:
@@ -327,14 +315,11 @@ class CrawlWorker(QThread):
                         current_page += 1
                         continue
 
-                # --- BẮT ĐẦU TRÍCH XUẤT URL ---
                 self.log_signal.emit(f"-> Đã load {item_count} thẻ văn bản. Đang trích xuất URL...")
                 docs = []
 
-                # LỚP 1: TRÍCH XUẤT URL THEO CẤU TRÚC HTML
                 for i in range(item_count):
                     item = page.locator(".ant-list-item").nth(i)
-                    
                     title_loc = item.locator("h3, .title, .ant-typography").first
                     if await title_loc.count() > 0:
                         title_text = await title_loc.inner_text()
@@ -363,13 +348,11 @@ class CrawlWorker(QThread):
                             href = "https://vbpl.vn/" + href
                         docs.append({"url": href, "title": title_text})
 
-                # LỚP 2 (DỰ PHÒNG CLICK DÒ LINK NẾU BỊ ẨN)
                 if len(docs) == 0:
                     self.log_signal.emit("-> Website ẩn URL. Kích hoạt phương án Click dò đường link tự động...")
                     for i in range(item_count):
                         item = page.locator(".ant-list-item").nth(i)
                         title_loc = item.locator("h3, .title, .ant-typography").first
-                        
                         target = title_loc if await title_loc.count() > 0 else item
                         title_text = await target.inner_text()
                         title_text = title_text.strip().split('\n')[0][:60]
@@ -392,9 +375,7 @@ class CrawlWorker(QThread):
 
                 self.log_signal.emit(f"-> Thu thập được {len(docs)} URL. Đẩy vào 5 luồng xử lý...")
 
-                # CHẠY 5 LUỒNG SONG SONG
                 semaphore = asyncio.Semaphore(5)
-                
                 page_has_error = False
                 page_error_details = []
 
@@ -421,7 +402,6 @@ class CrawlWorker(QThread):
                             c_elem = new_page.locator(".preview-content, #rc-tabs-0-panel-toan-van, div.content, article").first
                             noi_dung = (await c_elem.inner_html()).strip() if (await c_elem.count()) > 0 else ten_vb
                             
-                            # ĐỢI VÀ BÓC TÁCH DICTIONARY THUỘC TÍNH
                             props_dict = {}
                             try:
                                 prop_container = new_page.locator("#rc-tabs-0-tab-thuoc-tinh, div.ant-tabs-tab-btn:has-text('Thuộc tính'), div:has-text('Thuộc tính văn bản')").last
@@ -474,7 +454,6 @@ class CrawlWorker(QThread):
                             except Exception:
                                 pass
                                 
-                            # Chuẩn hóa keys
                             normalized_props = {}
                             for k, v in props_dict.items():
                                 if k:
@@ -482,9 +461,15 @@ class CrawlWorker(QThread):
                             props_dict = normalized_props
                             
                             so_hieu = props_dict.get("Số hiệu", props_dict.get("Số hiệu văn bản", "Đang cập nhật"))[:100]
-                            
+                            nguoi_ky = props_dict.get("Người ký", "Cơ quan thẩm quyền")[:255]
+                            trang_thai = props_dict.get("Tình trạng hiệu lực", "Còn hiệu lực")[:255]
+                            nganh = props_dict.get("Ngành", "")[:255]
+                            chuc_danh = props_dict.get("Chức danh", "")[:255]
+                            co_quan_ban_hanh = props_dict.get("Cơ quan ban hành", "")[:255]
+                            loai_van_ban = props_dict.get("Loại văn bản", "")[:255]
+
                             # ========================================================
-                            # KIỂM TRA TRÙNG LẶP SAU KHI LẤY ĐƯỢC SỐ HIỆU
+                            # KIỂM TRA TRÙNG LẶP CHÍNH XÁC ĐA ĐIỀU KIỆN
                             # ========================================================
                             clean_ten_vb = " ".join(ten_vb.split())
                             clean_so_hieu = " ".join(so_hieu.split())
@@ -502,12 +487,15 @@ class CrawlWorker(QThread):
                                     )
                                     cursor = connection.cursor()
                                 
-                                # Ưu tiên kiểm tra bằng SỐ HIỆU nếu có (Chính xác 100%)
                                 if clean_so_hieu and clean_so_hieu not in ["Đang cập nhật", "", "--"]:
-                                    check_sql = f"SELECT COUNT(*) FROM `{target_table}` WHERE `SO_HIEU` = %s"
-                                    cursor.execute(check_sql, (clean_so_hieu,))
+                                    check_sql = f"""
+                                        SELECT COUNT(*) FROM `{target_table}` 
+                                        WHERE `SO_HIEU` = %s 
+                                          AND (`LOAI_VAN_BAN` = %s OR %s = '')
+                                          AND (`CO_QUAN_BAN_HANH` = %s OR %s = '')
+                                    """
+                                    cursor.execute(check_sql, (clean_so_hieu, loai_van_ban, loai_van_ban, co_quan_ban_hanh, co_quan_ban_hanh))
                                 else:
-                                    # Fallback kiểm tra bằng TÊN VĂN BẢN (Loại bỏ ký tự xuống dòng và khoảng trắng)
                                     check_sql = f"SELECT COUNT(*) FROM `{target_table}` WHERE TRIM(REPLACE(REPLACE(TEN_VAN_BAN, CHAR(10), ' '), CHAR(13), ' ')) = %s"
                                     cursor.execute(check_sql, (clean_ten_vb,))
                                     
@@ -515,17 +503,10 @@ class CrawlWorker(QThread):
 
                             if exists > 0:
                                 total_skipped += 1
-                                self.log_signal.emit(f"    -> [TRÙNG] Đã có (SH: {clean_so_hieu} | Tên: {short_title}), Bỏ qua tải file.")
+                                self.log_signal.emit(f"    -> [TRÙNG] Đã có (SH: {clean_so_hieu} | Loại: {loai_van_ban} | CQ: {co_quan_ban_hanh}), Bỏ qua.")
                                 return
                             # ========================================================
 
-                            nguoi_ky = props_dict.get("Người ký", "Cơ quan thẩm quyền")[:255]
-                            trang_thai = props_dict.get("Tình trạng hiệu lực", "Còn hiệu lực")[:255]
-                            nganh = props_dict.get("Ngành", "")[:255]
-                            chuc_danh = props_dict.get("Chức danh", "")[:255]
-                            co_quan_ban_hanh = props_dict.get("Cơ quan ban hành", "")[:255]
-                            loai_van_ban = props_dict.get("Loại văn bản", "")[:255]
-                            
                             def parse_date(date_str):
                                 if not date_str or date_str == "--" or "Đang cập nhật" in date_str:
                                     return None
@@ -538,32 +519,27 @@ class CrawlWorker(QThread):
                             ngay_hieu_luc = parse_date(props_dict.get("Ngày có hiệu lực", ""))
                             ngay_het_hieu_luc = parse_date(props_dict.get("Ngày hết hiệu lực", ""))
 
-                            # CLICK LẤY LƯỢC ĐỒ
                             luoc_do_html = ""
                             try:
                                 luoc_do_tab = new_page.locator("#rc-tabs-0-tab-luoc-do, div.ant-tabs-tab-btn:has-text('Lược đồ')").first
                                 if (await luoc_do_tab.count()) > 0:
                                     await luoc_do_tab.click(timeout=8000)
                                     await new_page.wait_for_timeout(2000)
-                                    
                                     luoc_do_pane = new_page.locator("#rc-tabs-0-panel-luoc-do, .ant-tabs-tabpane-active").first
                                     if (await luoc_do_pane.count()) > 0:
                                         luoc_do_html = await luoc_do_pane.inner_html()
                             except Exception:
                                 pass
                                 
-                            # CLICK LẤY JSON LINK TẢI VỀ + UPLOAD GITHUB
                             tai_ve_json = ""
                             try:
                                 tai_ve_tab = new_page.locator("#rc-tabs-0-tab-tai-ve, div.ant-tabs-tab-btn:has-text('Tải về')").first
                                 if (await tai_ve_tab.count()) > 0:
                                     await tai_ve_tab.click(timeout=8000)
                                     await new_page.wait_for_timeout(2000)
-                                    
                                     tai_ve_pane = new_page.locator("#rc-tabs-0-panel-tai-ve, .ant-tabs-tabpane-active").first
                                     if (await tai_ve_pane.count()) > 0:
                                         links_data = []
-                                        # Lấy <a> tag
                                         links = tai_ve_pane.locator("a")
                                         link_count = await links.count()
                                         for i in range(link_count):
@@ -606,7 +582,6 @@ class CrawlWorker(QThread):
                                                     pass
                                                 links_data.append({"text": text.strip(), "url": final_url})
                                                 
-                                        # Lấy <button> tải xuống
                                         buttons = tai_ve_pane.locator("button:has(svg path[d*='M8 10V2'])")
                                         btn_count = await buttons.count()
                                         if btn_count == 0:
@@ -706,7 +681,6 @@ class CrawlWorker(QThread):
                 if tasks:
                     await asyncio.gather(*tasks)
 
-                # --- LƯU TRẠNG THÁI VÀO CRAWL_LOG ---
                 if not page_has_error:
                     if current_page not in progress_data[source_key]["success"]:
                         progress_data[source_key]["success"].append(current_page)
@@ -733,7 +707,6 @@ class CrawlWorker(QThread):
                     except Exception:
                         pass
                     
-                # --- CHUYỂN SANG TRANG TIẾP THEO ---
                 next_page_num = current_page + 1
                 self.log_signal.emit(f"\n-> Đang tìm cách chuyển sang trang {next_page_num}...")
                 try:
