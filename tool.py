@@ -79,7 +79,7 @@ async def upload_to_github(api_context, filename, file_content, log_signal, sour
                 "private": False,
                 "auto_init": True
             }
-            log_signal.emit(f"      -> [GitHub] Đang tạo kho mới: {repo_name}...")
+            log_signal.emit(f"      -> [GitHub] Đang kiểm tra/tạo kho mới: {repo_name}...")
             resp = await api_context.post(create_url, headers=headers, data=create_data, timeout=60000)
             if resp.ok or resp.status == 422:
                 log_signal.emit(f"      -> [GitHub] Kho {repo_name} đã sẵn sàng.")
@@ -112,6 +112,7 @@ async def upload_to_github(api_context, filename, file_content, log_signal, sour
             await save_github_state(state, source_key)
                 
             final_url = f"https://{CUSTOM_DOMAIN}/{repo_name}/main/{file_path}"
+            log_signal.emit(f"      -> [GitHub Upload Thành Công]: {final_url}")
             return True, final_url
         else:
             resp_text = await upload_resp.text()
@@ -275,7 +276,6 @@ class CrawlWorker(QThread):
                 if item_count == 0:
                     page_title = await page.title()
                     self.log_signal.emit(f"Không tìm thấy dữ liệu văn bản nào. Đã quét hết toàn bộ trang! Title: {page_title}.")
-                    # Không đánh dấu fatal error ở đây để tránh dừng đột ngột nếu chỉ là hết trang
                     break
 
                 if current_page in progress_data[source_key]["success"]:
@@ -574,8 +574,8 @@ class CrawlWorker(QThread):
                                                         else:
                                                             page_has_error = True
                                                             page_error_details.append(f"Upload lỗi: {filename}")
-                                                except Exception:
-                                                    pass
+                                                except Exception as ex:
+                                                    self.log_signal.emit(f"      -> [Lỗi tải file <a>]: {str(ex)[:80]}")
                                                 links_data.append({"text": text.strip(), "url": final_url})
                                                 
                                         buttons = tai_ve_pane.locator("button:has(svg path[d*='M8 10V2'])")
@@ -616,13 +616,13 @@ class CrawlWorker(QThread):
                                                         page_has_error = True
                                                         page_error_details.append(f"Upload lỗi: {filename}")
                                                     links_data.append({"text": filename, "url": final_url})
-                                                except Exception:
-                                                    pass
+                                                except Exception as ex:
+                                                    self.log_signal.emit(f"      -> [Lỗi tải file Button]: {str(ex)[:80]}")
                                                     
                                         if links_data:
                                             tai_ve_json = json.dumps(links_data, ensure_ascii=False)
-                            except Exception:
-                                pass
+                            except Exception as ex:
+                                self.log_signal.emit(f"    -> [Lỗi Tab Tải Về]: {str(ex)[:80]}")
 
                             async with db_lock:
                                 try:
@@ -904,7 +904,6 @@ if __name__ == "__main__":
         config_dp = config.copy()
         config_dp["url"] = "https://vbpl.vn/van-ban/dia-phuong"
         
-        # Chạy tuần tự: Chạy Trung Ương xong mới chạy Địa Phương, tránh nghẽn luồng và exit code 1 sai lệch
         worker_tu = CrawlWorker(config_tu)
         worker_dp = CrawlWorker(config_dp)
         
