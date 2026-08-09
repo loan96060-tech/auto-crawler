@@ -275,7 +275,7 @@ class CrawlWorker(QThread):
                 if item_count == 0:
                     page_title = await page.title()
                     self.log_signal.emit(f"Không tìm thấy dữ liệu văn bản nào. Đã quét hết toàn bộ trang! Title: {page_title}.")
-                    self.has_fatal_error = True
+                    # Không đánh dấu fatal error ở đây để tránh dừng đột ngột nếu chỉ là hết trang
                     break
 
                 if current_page in progress_data[source_key]["success"]:
@@ -468,9 +468,6 @@ class CrawlWorker(QThread):
                             co_quan_ban_hanh = props_dict.get("Cơ quan ban hành", "")[:255]
                             loai_van_ban = props_dict.get("Loại văn bản", "")[:255]
 
-                            # ========================================================
-                            # KIỂM TRA TRÙNG LẶP CHÍNH XÁC ĐA ĐIỀU KIỆN
-                            # ========================================================
                             clean_ten_vb = " ".join(ten_vb.split())
                             clean_so_hieu = " ".join(so_hieu.split())
                             
@@ -505,7 +502,6 @@ class CrawlWorker(QThread):
                                 total_skipped += 1
                                 self.log_signal.emit(f"    -> [TRÙNG] Đã có (SH: {clean_so_hieu} | Loại: {loai_van_ban} | CQ: {co_quan_ban_hanh}), Bỏ qua.")
                                 return
-                            # ========================================================
 
                             def parse_date(date_str):
                                 if not date_str or date_str == "--" or "Đang cập nhật" in date_str:
@@ -908,32 +904,26 @@ if __name__ == "__main__":
         config_dp = config.copy()
         config_dp["url"] = "https://vbpl.vn/van-ban/dia-phuong"
         
+        # Chạy tuần tự: Chạy Trung Ương xong mới chạy Địa Phương, tránh nghẽn luồng và exit code 1 sai lệch
         worker_tu = CrawlWorker(config_tu)
         worker_dp = CrawlWorker(config_dp)
         
-        window.completed_workers = 0
-        def on_worker_finished():
-            window.completed_workers += 1
-            if window.completed_workers == 2:
-                if worker_tu.has_fatal_error or worker_dp.has_fatal_error:
-                    print("Quá trình cào bị lỗi hoặc chặn. Thoát với mã lỗi 1.")
-                    import sys
-                    sys.exit(1)
-                else:
-                    print("Hoàn thành toàn bộ quá trình cào. Đang thoát...")
-                    QApplication.quit()
+        def run_dp_worker():
+            print("Hoàn thành cào Trung Ương. Chuyển sang cào Địa Phương...")
+            worker_dp.log_signal.connect(window.append_log)
+            worker_dp.finished_signal.connect(on_all_finished)
+            window.worker_dp = worker_dp
+            worker_dp.start()
+
+        def on_all_finished():
+            print("Hoàn thành toàn bộ quá trình cào Trung Ương và Địa Phương. Thoát an toàn.")
+            os._exit(0)
         
         worker_tu.log_signal.connect(window.append_log)
-        worker_tu.finished_signal.connect(on_worker_finished)
-        
-        worker_dp.log_signal.connect(window.append_log)
-        worker_dp.finished_signal.connect(on_worker_finished)
+        worker_tu.finished_signal.connect(run_dp_worker)
         
         window.worker_tu = worker_tu
-        window.worker_dp = worker_dp
-        
         worker_tu.start()
-        worker_dp.start()
     else:
         window.show()
     sys.exit(app.exec_())
