@@ -7,9 +7,12 @@ on:
 
 jobs:
   crawl:
-    name: Headless Crawl
+    name: Headless Crawl (Máy ${{ matrix.machine }})
     runs-on: ubuntu-latest
     timeout-minutes: 300 # Tự tắt sau 5 tiếng để kịp commit data
+    strategy:
+      matrix:
+        machine: [1, 2, 3, 4]
 
     steps:
       - name: Checkout Code
