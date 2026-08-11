@@ -272,17 +272,21 @@ class CrawlWorker(QThread):
             page = await context.new_page()
             
             self.log_signal.emit(f"Đang truy cập cổng thông tin VBPL (Chế độ {'Ẩn' if is_headless else 'Hiện'} trình duyệt)...")
-            try:
-                await page.goto("https://vbpl.vn", timeout=120000, wait_until="domcontentloaded")
-                await page.wait_for_timeout(3000)
-                await page.goto(target_url, timeout=120000, wait_until="domcontentloaded")
-            except Exception as e:
-                self.log_signal.emit(f"Lỗi truy cập trang (Timeout): {e}")
+            goto_success = False
+            for attempt in range(1, 4):
                 try:
-                    html_err = await page.content()
-                    self.log_signal.emit(f"--- NỘI DUNG HTML TRẢ VỀ ---\n{html_err[:2000]}\n----------------------------")
-                except:
-                    pass
+                    self.log_signal.emit(f"Đang truy cập cổng thông tin VBPL (Lần {attempt}/3)...")
+                    await page.goto("https://vbpl.vn", timeout=120000, wait_until="domcontentloaded")
+                    await page.wait_for_timeout(3000)
+                    await page.goto(target_url, timeout=120000, wait_until="domcontentloaded")
+                    goto_success = True
+                    break
+                except Exception as e:
+                    self.log_signal.emit(f"⚠️ Lỗi kết nối trang (Lần {attempt}/3): {e}. Chờ 10 giây thử lại...")
+                    await page.wait_for_timeout(10000)
+
+            if not goto_success:
+                self.log_signal.emit("❌ Không thể kết nối tới máy chủ VBPL sau 3 lần thử.")
                 self.has_fatal_error = True
                 await browser.close()
                 self.finished_signal.emit()
@@ -328,12 +332,38 @@ class CrawlWorker(QThread):
                     await page.wait_for_timeout(5000)
 
                 item_count = await page.locator(".ant-list-item").count()
+                page_title = await page.title()
+                
+                # NẾU TRANG BỊ 502 BAD GATEWAY HOẶC KHIẾN ITEM = 0 -> TỰ ĐỘNG RETRY THỬ LẠI 5 LẦN
+                retry_count = 0
+                max_page_retries = 5
+                while item_count == 0 and retry_count < max_page_retries:
+                    is_server_err = any(err in page_title.lower() for err in ["502", "500", "503", "gateway", "unavailable", "bad gateway", "service"])
+                    if is_server_err:
+                        retry_count += 1
+                        self.log_signal.emit(f"⚠️ [MÁY CHỦ VBPL LỖI 502 BAD GATEWAY] Tải trang {current_page} thất bại. Đang chờ 10 giây để thử lại (Lần {retry_count}/{max_page_retries})...")
+                        await page.wait_for_timeout(10000)
+                        try:
+                            await page.reload(timeout=60000, wait_until="domcontentloaded")
+                            await page.wait_for_timeout(3000)
+                            item_count = await page.locator(".ant-list-item").count()
+                            page_title = await page.title()
+                        except Exception:
+                            pass
+                    else:
+                        break
+
                 if item_count == 0:
-                    page_title = await page.title()
                     page_content = await page.content()
-                    self.log_signal.emit(f"Không tìm thấy dữ liệu văn bản nào. Đã quét hết toàn bộ trang! Title: {page_title}. Nội dung HTML: {page_content[:200]}")
-                    self.has_fatal_error = True
-                    break
+                    is_server_err = any(err in page_title.lower() for err in ["502", "500", "503", "gateway", "unavailable", "bad gateway", "service"])
+                    if is_server_err:
+                        self.log_signal.emit(f"❌ Máy chủ VBPL quá tải (502 Bad Gateway) sau 5 lần thử. Tạm dừng tiến trình máy này.")
+                        self.has_fatal_error = True
+                        break
+                    else:
+                        self.log_signal.emit(f"Không tìm thấy dữ liệu văn bản nào. Đã quét hết toàn bộ trang! Title: {page_title}.")
+                        self.has_fatal_error = False
+                        break
 
                 highest_page = max(progress_data[source_key]["success"]) if progress_data[source_key]["success"] else 0
 
@@ -405,7 +435,11 @@ class CrawlWorker(QThread):
                 for i in range(item_count):
                     item = page.locator(".ant-list-item").nth(i)
                     
-                    title_loc = item.locator("h3, .title, .ant-typography").first
+                    # Ưu tiên lấy thẻ h3 hoặc thẻ a tiêu đề văn bản, BỎ QUA các badge như .ant-tag (Mới, HOT...)
+                    title_loc = item.locator("h3, a.title, .title").first
+                    if await title_loc.count() == 0:
+                        title_loc = item.locator("a[href*='/van-ban/']").first
+                        
                     if await title_loc.count() > 0:
                         title_text = await title_loc.inner_text()
                     else:
@@ -418,7 +452,9 @@ class CrawlWorker(QThread):
                         href = await item.get_attribute("href")
                     
                     if not href:
-                        links = item.locator("a")
+                        links = item.locator("a[href*='/van-ban/']")
+                        if await links.count() == 0:
+                            links = item.locator("a")
                         link_count = await links.count()
                         for j in range(link_count):
                             temp_href = await links.nth(j).get_attribute("href")
@@ -431,6 +467,11 @@ class CrawlWorker(QThread):
                             href = "https://vbpl.vn" + href
                         elif not href.startswith("http"):
                             href = "https://vbpl.vn/" + href
+                            
+                        # Bỏ qua các URL rác không chứa /van-ban/
+                        if "/van-ban/" not in href:
+                            continue
+                            
                         docs.append({"url": href, "title": title_text})
 
                 # LỚP 2 (DỰ PHÒNG): NẾU WEBSITE ẨN LINK HOÀN TOÀN BẰNG REACT ONCLICK
@@ -438,7 +479,7 @@ class CrawlWorker(QThread):
                     self.log_signal.emit("-> Website ẩn URL. Kích hoạt phương án Click dò đường link tự động...")
                     for i in range(item_count):
                         item = page.locator(".ant-list-item").nth(i)
-                        title_loc = item.locator("h3, .title, .ant-typography").first
+                        title_loc = item.locator("h3, a.title, .title, a[href*='/van-ban/']").first
                         
                         target = title_loc if await title_loc.count() > 0 else item
                         title_text = await target.inner_text()
@@ -487,6 +528,12 @@ class CrawlWorker(QThread):
                             title_detail = new_page.locator("h1, .document-title, .title, .vbProperties_Title").first
                             ten_vb = (await title_detail.inner_text()).strip() if (await title_detail.count()) > 0 else short_title
                             ten_vb = ten_vb[:900]
+                            
+                            # BỎ QUA NẾU TIÊU ĐỀ LÀ NHÃN RÁC ("Mới", "Hot", "Chi tiết"...) HOẶC QUÁ NGẮN
+                            junk_titles = ["mới", "hot", "chi tiết", "xem thêm", "đang tải dữ liệu...", "trang chủ"]
+                            if ten_vb.strip().lower() in junk_titles or len(ten_vb.strip()) < 5:
+                                self.log_signal.emit(f"    -> [BỎ QUA]: Không phải trang văn bản hợp lệ (Tiêu đề rác: '{ten_vb}').")
+                                return
                             
                             # Kiểm tra trùng lặp NGAY TỪ ĐẦU để tránh tải file và DOM thừa
                             async with db_lock:
@@ -758,6 +805,20 @@ class CrawlWorker(QThread):
                             co_quan_ban_hanh = props_dict.get("Cơ quan ban hành", "")[:255]
                             loai_van_ban = props_dict.get("Loại văn bản", "")[:255]
                             
+                            # TRÍCH XUẤT CỨU HỘ BẰNG REGEX NẾU THUỘC TÍNH BỊ THIẾU
+                            import re
+                            if so_hieu == "Đang cập nhật" or not so_hieu:
+                                match_so = re.search(r'([0-9]+/[0-9]{4}/[A-ZĐa-z\-\+]+|[0-9]+/[A-ZĐa-z\-\+]+)', ten_vb)
+                                if match_so:
+                                    so_hieu = match_so.group(1)[:100]
+
+                            if not loai_van_ban:
+                                types = ["Thông tư liên tịch", "Thông tư", "Quyết định", "Nghị định", "Luật", "Nghị quyết", "Chỉ thị", "Lệnh", "Thông báo", "Hướng dẫn"]
+                                for t in types:
+                                    if re.search(r'\b' + re.escape(t) + r'\b', ten_vb, re.IGNORECASE):
+                                        loai_van_ban = t[:255]
+                                        break
+                                        
                             # Hàm chuyển đổi chuỗi ngày DD/MM/YYYY sang format YYYY-MM-DD của MySQL
                             import datetime
                             def parse_date(date_str):
@@ -771,6 +832,12 @@ class CrawlWorker(QThread):
                             ngay_ban_hanh = parse_date(props_dict.get("Ngày ban hành", ""))
                             ngay_hieu_luc = parse_date(props_dict.get("Ngày có hiệu lực", ""))
                             ngay_het_hieu_luc = parse_date(props_dict.get("Ngày hết hiệu lực", ""))
+
+                            # Tìm ngày từ tiêu đề nếu ngày ban hành rỗng
+                            if not ngay_ban_hanh:
+                                date_match = re.search(r'(\d{1,2}/\d{1,2}/\d{4})', ten_vb)
+                                if date_match:
+                                    ngay_ban_hanh = parse_date(date_match.group(1))
 
                             async with db_lock:
                                 try:
@@ -793,8 +860,8 @@ class CrawlWorker(QThread):
                                     ten_vb, 
                                     noi_dung, 
                                     trang_thai, 
-                                    ngay_ban_hanh if ngay_ban_hanh else datetime.datetime.now(), 
-                                    ngay_hieu_luc if ngay_hieu_luc else datetime.datetime.now(), 
+                                    ngay_ban_hanh if ngay_ban_hanh else None, 
+                                    ngay_hieu_luc if ngay_hieu_luc else None, 
                                     "Trung ương" if is_central else "Địa phương", 
                                     nguoi_ky,
                                     nganh,
@@ -807,7 +874,7 @@ class CrawlWorker(QThread):
                                 ))
                                 connection.commit()
                                 total_saved += 1
-                                self.log_signal.emit(f"    -> [ĐÃ LƯU] SH: {so_hieu} | Ký: {nguoi_ky}")
+                                self.log_signal.emit(f"    -> [ĐÃ LƯU] SH: {so_hieu} | Loai: {loai_van_ban} | Ký: {nguoi_ky}")
                                     
                         except Exception as e:
                             page_has_error = True
