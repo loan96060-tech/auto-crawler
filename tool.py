@@ -93,34 +93,49 @@ async def upload_to_github(api_context, filename, file_content, log_signal, sour
                 log_signal.emit(f"      -> [LỖI GitHub] Không thể tạo kho {repo_name}: {resp_text[:100]}")
                 return False, ""
                 
-        # Tiến hành Upload tuần tự (Để tránh lỗi Conflict Tree của GitHub khi push song song)
+        # Tiến hành Upload tuần tự (Để tránh lỗi Conflict Tree của GitHub khi push song song từ nhiều máy)
         import urllib.parse
-        safe_filename = urllib.parse.quote(filename.replace(' ', '_'))
-        file_path = f"files/{int(time.time())}_{safe_filename}"
-        upload_url = f"https://api.github.com/repos/{GITHUB_USERNAME}/{repo_name}/contents/{file_path}"
+        import random
+        import asyncio
         
+        safe_filename = urllib.parse.quote(filename.replace(' ', '_'))
         encoded_content = base64.b64encode(file_content).decode('utf-8')
         headers = {
             "Authorization": f"token {GITHUB_TOKEN}",
             "Accept": "application/vnd.github.v3+json"
         }
         
-        put_data = {
-            "message": f"Add {filename}",
-            "content": encoded_content
-        }
-        
-        upload_resp = await api_context.put(upload_url, headers=headers, data=put_data, timeout=60000)
-        if upload_resp.ok:
-            state["file_count"] += 1
-            await save_github_state(state, source_key)
-                
-            final_url = f"https://{CUSTOM_DOMAIN}/{repo_name}/main/{file_path}"
-            return True, final_url
-        else:
+        max_retries = 5
+        for attempt in range(max_retries):
+            # Tạo unique path (chống trùng khi nhiều máy ảo upload cùng 1 giây)
+            unique_id = f"{int(time.time())}_{random.randint(1000, 9999)}"
+            file_path = f"files/{unique_id}_{safe_filename}"
+            upload_url = f"https://api.github.com/repos/{GITHUB_USERNAME}/{repo_name}/contents/{file_path}"
+            
+            put_data = {
+                "message": f"Add {filename}",
+                "content": encoded_content
+            }
+            
+            upload_resp = await api_context.put(upload_url, headers=headers, data=put_data, timeout=60000)
+            if upload_resp.ok:
+                state["file_count"] += 1
+                await save_github_state(state, source_key)
+                    
+                final_url = f"https://{CUSTOM_DOMAIN}/{repo_name}/main/{file_path}"
+                return True, final_url
+            elif upload_resp.status == 409 or upload_resp.status == 422:
+                # Xung đột Tree Commit do máy ảo khác đang upload cùng lúc
+                if attempt < max_retries - 1:
+                    wait_time = random.uniform(1.0, 4.0)
+                    log_signal.emit(f"      -> [Đụng độ Git] Đang thử lại sau {wait_time:.1f}s...")
+                    await asyncio.sleep(wait_time)
+                    continue
+                    
             resp_text = await upload_resp.text()
-            log_signal.emit(f"      -> [Lỗi GitHub Upload]: {resp_text[:150]}")
-            return False, ""
+            log_signal.emit(f"      -> [Lỗi GitHub Upload (Thử {attempt+1}/{max_retries})]: {resp_text[:150]}")
+            if attempt == max_retries - 1:
+                return False, ""
 
 class CrawlWorker(QThread):
     log_signal = pyqtSignal(str)
@@ -503,8 +518,7 @@ class CrawlWorker(QThread):
                             props_dict = {}
                             try:
                                 # Chờ tối đa 8 giây cho tab hoặc card Thuộc tính xuất hiện
-                                # Dùng or để tìm 1 trong các chuẩn giao diện
-                                prop_container = new_page.locator("#rc-tabs-0-tab-thuoc-tinh, div.ant-tabs-tab-btn:has-text('Thuộc tính'), div:has-text('Thuộc tính văn bản')").last
+                                prop_container = new_page.locator("[id*='tab-thuoc-tinh'], div.ant-tabs-tab-btn:has-text('Thuộc tính'), div:has-text('Thuộc tính văn bản')").last
                                 try:
                                     await prop_container.wait_for(state="attached", timeout=8000)
                                 except Exception:
@@ -512,12 +526,12 @@ class CrawlWorker(QThread):
                                     
                                 prop_pane = None
                                 
-                                # Nếu là dạng tab cũ thì click
-                                prop_tab = new_page.locator("#rc-tabs-0-tab-thuoc-tinh, div.ant-tabs-tab-btn:has-text('Thuộc tính')").first
+                                # Nếu là dạng tab cũ/mới thì click
+                                prop_tab = new_page.locator("[id*='tab-thuoc-tinh'], div.ant-tabs-tab-btn:has-text('Thuộc tính')").first
                                 if (await prop_tab.count()) > 0:
                                     await prop_tab.click(timeout=8000)
                                     await new_page.wait_for_timeout(2000)
-                                    prop_pane = new_page.locator("#rc-tabs-0-panel-thuoc-tinh, .ant-tabs-tabpane-active").first
+                                    prop_pane = new_page.locator("[id*='panel-thuoc-tinh'], .ant-tabs-tabpane-active").first
                                 else:
                                     # Nếu là dạng card mới (không có tab)
                                     card = new_page.locator("div.ant-card, div.card, div").filter(has_text="Thuộc tính văn bản").last
@@ -525,15 +539,26 @@ class CrawlWorker(QThread):
                                         prop_pane = card
                                 
                                 if prop_pane and (await prop_pane.count()) > 0:
-                                    # Parse bằng DOM JS thay vì innerText để tránh lỗi mất cột
+                                    # Parse bằng DOM JS với độ chính xác cao cho mọi giao diện (Ant Design Space, Table, Flex, Row)
                                     props_dict_js = await prop_pane.evaluate("""(pane) => {
                                         let res = {};
                                         let cleanKey = (k) => k.replace(/:$/, '').trim();
                                         
-                                        // 1. Thử tìm theo table row (tr > th/td)
+                                        // 1. Cấu trúc Ant Design Space (.ant-space chứa .ant-space-item label và .ant-space-item value)
+                                        pane.querySelectorAll('.ant-space').forEach(sp => {
+                                            let items = sp.querySelectorAll('.ant-space-item');
+                                            if (items.length >= 2) {
+                                                let k = cleanKey(items[0].innerText);
+                                                let v = items[1].innerText.trim();
+                                                if (k && v !== undefined) {
+                                                    res[k] = v;
+                                                }
+                                            }
+                                        });
+
+                                        // 2. Thử tìm theo table row (tr > th/td)
                                         pane.querySelectorAll('tr').forEach(tr => {
                                             let cells = tr.querySelectorAll('th, td');
-                                            // vbpl.vn thường ghép 2 cột (4 ô th/td) trên 1 dòng
                                             for (let i = 0; i < cells.length - 1; i += 2) {
                                                 let key = cleanKey(cells[i].innerText);
                                                 if (key) {
@@ -541,7 +566,8 @@ class CrawlWorker(QThread):
                                                 }
                                             }
                                         });
-                                        // 2. Thử tìm theo cấu trúc của Ant Design (Descriptions)
+
+                                        // 3. Thử tìm theo cấu trúc của Ant Design Descriptions
                                         pane.querySelectorAll('.ant-descriptions-item').forEach(item => {
                                             let label = item.querySelector('.ant-descriptions-item-label');
                                             let content = item.querySelector('.ant-descriptions-item-content');
@@ -549,17 +575,19 @@ class CrawlWorker(QThread):
                                                 res[cleanKey(label.innerText)] = content.innerText.trim();
                                             }
                                         });
-                                        // 3. Fallback tìm theo các div ngang hàng (nếu web dùng grid/flex)
-                                        pane.querySelectorAll('.ant-row, .row, li').forEach(row => {
-                                            if (row.children.length >= 2 && !row.querySelector('table')) {
-                                                for (let i = 0; i < row.children.length - 1; i += 2) {
-                                                    let key = cleanKey(row.children[i].innerText);
-                                                    if (key) {
-                                                        res[key] = row.children[i+1].innerText.trim();
-                                                    }
+
+                                        // 4. Nếu chưa bắt được, thử lọc qua các thẻ con có chứa ':'
+                                        if (Object.keys(res).length === 0) {
+                                            pane.querySelectorAll('div, li, p, span').forEach(el => {
+                                                if (el.children.length === 0 && el.innerText.includes(':')) {
+                                                    let parts = el.innerText.split(':');
+                                                    let k = cleanKey(parts[0]);
+                                                    let v = parts.slice(1).join(':').trim();
+                                                    if (k && v) res[k] = v;
                                                 }
-                                            }
-                                        });
+                                            });
+                                        }
+
                                         return res;
                                     }""")
                                     
@@ -568,7 +596,7 @@ class CrawlWorker(QThread):
                                         
                                     if not props_dict:
                                         raw_props = (await prop_pane.inner_text()).strip().split('\n')
-                                        known_keys = ["Số hiệu", "Loại văn bản", "Cơ quan ban hành", "Người ký", "Chức danh", "Ngành", "Phạm vi", "Ngày ban hành", "Ngày có hiệu lực", "Ngày hết hiệu lực", "Tình trạng hiệu lực"]
+                                        known_keys = ["Số hiệu", "Loại văn bản", "Cơ quan ban hành", "Người ký", "Chức danh", "Ngành", "Phạm vi", "Ngày ban hành", "Ngày có hiệu lực", "Ngày hết hiệu lực", "Tình trạng hiệu lực", "Lĩnh vực", "Số ký hiệu"]
                                         for i in range(len(raw_props)):
                                             line = raw_props[i].strip()
                                             line_clean = line.replace(':', '').strip()
